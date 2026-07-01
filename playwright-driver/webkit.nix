@@ -51,34 +51,19 @@
   zlib,
   suffix,
   revision,
-  revisionOverrides ? {},
+  revisionOverrides ? { },
   system,
   throwSystem,
 }:
 let
-  # Determine the revision override key based on platform
-  revisionOverrideKey =
-    if system == "x86_64-darwin" then
-      "mac14"
-    else if system == "aarch64-darwin" then
-      "mac14-arm64"
-    else
-      null;
-
-  # Use revision override if available, otherwise fall back to base revision
-  revision' =
-    if revisionOverrideKey != null && revisionOverrides ? ${revisionOverrideKey} then
-      revisionOverrides.${revisionOverrideKey}
-    else
-      revision;
-
-  suffix' =
-    if lib.hasPrefix "linux" suffix then
-      "ubuntu-24.04" + (lib.removePrefix "linux" suffix)
-    else if lib.hasPrefix "mac" suffix then
-      "mac-14" + (lib.removePrefix "mac" suffix)
-    else
-      suffix;
+  # Nix evaluation cannot detect the host macOS version, so both darwin webkit
+  # builds are laid out under the exact directory names Playwright computes at
+  # runtime (readDescriptors): the base revision under "webkit-<rev>" and each
+  # matching macNN override under "webkit_<key>_special-<override-rev>". Playwright
+  # selects the directory that matches the running OS when it launches. Linux
+  # revisionOverrides (debianNN, ubuntu20.04) are intentionally not laid out; the
+  # flake ships only the base ubuntu-24.04 linux build.
+  linuxSuffix = "ubuntu-24.04" + (lib.removePrefix "linux" suffix);
   libvpx' = libvpx.overrideAttrs (
     finalAttrs: previousAttrs: {
       version = "1.12.0";
@@ -144,7 +129,7 @@ let
   webkit-linux = stdenv.mkDerivation {
     name = "playwright-webkit";
     src = fetchzip {
-      url = "https://cdn.playwright.dev/builds/webkit/${revision'}/webkit-${suffix'}.zip";
+      url = "https://cdn.playwright.dev/builds/webkit/${revision}/webkit-${linuxSuffix}.zip";
       stripRoot = false;
       hash =
         {
@@ -219,20 +204,66 @@ let
         --prefix LD_LIBRARY_PATH ":" $out/minibrowser-wpe/lib
     '';
   };
-  webkit-darwin = fetchzip {
-    url = "https://cdn.playwright.dev/builds/webkit/${revision'}/webkit-${suffix'}.zip";
-    stripRoot = false;
-    hash =
-      {
-        x86_64-darwin = "sha256-zmxdNdptFJ+8sad6HICoJRNsVNdQ0j4kKKCPX9YsBE8=";
-        aarch64-darwin = "sha256-AbDHuUg8jLNPWur6hieDdY8Kc2+PmlXRJGD46yujam4=";
-      }
-      .${system} or throwSystem;
+  # The base darwin build is the newest mac build Playwright ships (mac-15); the
+  # override builds derive their suffix from the revisionOverride key.
+  darwinBaseSuffix = "mac-15" + (lib.removePrefix "mac" suffix);
+
+  darwinHashes = {
+    x86_64-darwin = {
+      "mac-15" = "sha256-FFWFWKHroNBeDw4KYDe4UeucaJzMyin0Ca/qxN2iaO0=";
+      "mac-14" = "sha256-zmxdNdptFJ+8sad6HICoJRNsVNdQ0j4kKKCPX9YsBE8=";
+    };
+    aarch64-darwin = {
+      "mac-15-arm64" = "sha256-glVkYnthOFBPp1gZXTue9WwjP+oCgQpq6j9Mlm/bjmg=";
+      "mac-14-arm64" = "sha256-AbDHuUg8jLNPWur6hieDdY8Kc2+PmlXRJGD46yujam4=";
+    };
+  };
+
+  mkWebkitDarwin =
+    {
+      rev,
+      macSuffix,
+    }:
+    fetchzip {
+      url = "https://cdn.playwright.dev/builds/webkit/${rev}/webkit-${macSuffix}.zip";
+      stripRoot = false;
+      hash = darwinHashes.${system}.${macSuffix};
+    };
+
+  # macNN[-arm64] override keys for the current darwin arch (the base always applies).
+  darwinOverrideKeys = lib.filter (
+    key:
+    lib.hasPrefix "mac" key
+    && (
+      if lib.hasSuffix "-arm64" suffix then lib.hasSuffix "-arm64" key else !lib.hasSuffix "-arm64" key
+    )
+  ) (lib.attrNames revisionOverrides);
+
+  webkit-darwin = {
+    "webkit-${revision}" = mkWebkitDarwin {
+      rev = revision;
+      macSuffix = darwinBaseSuffix;
+    };
+  }
+  // lib.listToAttrs (
+    map (
+      key:
+      lib.nameValuePair
+        "webkit_${lib.replaceStrings [ "-" ] [ "_" ] key}_special-${revisionOverrides.${key}}"
+        (mkWebkitDarwin {
+          rev = revisionOverrides.${key};
+          macSuffix = "mac-" + (lib.removePrefix "mac" key);
+        })
+    ) darwinOverrideKeys
+  );
+
+  webkit-linux' = {
+    "webkit-${revision}" = webkit-linux;
   };
 in
 {
-  x86_64-linux = webkit-linux;
-  aarch64-linux = webkit-linux;
+  x86_64-linux = webkit-linux';
+  aarch64-linux = webkit-linux';
   x86_64-darwin = webkit-darwin;
   aarch64-darwin = webkit-darwin;
 }
