@@ -192,16 +192,42 @@ let
     in
     linkFarm "playwright-browsers" (
       lib.listToAttrs (
-        map (
+        lib.concatMap (
           name:
           let
             revName = if name == "chromium-headless-shell" then "chromium" else name;
             value = playwright-core.passthru.browsersJSON.${revName};
           in
-          lib.nameValuePair
-            # TODO check platform for revisionOverrides
-            "${lib.replaceStrings [ "-" ] [ "_" ] name}-${value.revision}"
-            components.${name}
+          if name == "webkit" then
+            # Lay out the base build under "webkit-<rev>" plus, on darwin, one
+            # "webkit_<key>_special-<override-rev>" entry per macNN override matching
+            # the host arch, reproducing the directory names Playwright resolves at
+            # runtime (readDescriptors). Linux override keys are intentionally not
+            # laid out; the flake ships only the base ubuntu-24.04 linux build.
+            let
+              overrides = value.revisionOverrides or { };
+              darwinOverrideKeys = lib.optionals stdenv.hostPlatform.isDarwin (
+                lib.filter (
+                  key:
+                  lib.hasPrefix "mac" key
+                  && (
+                    if stdenv.hostPlatform.isAarch64 then lib.hasSuffix "-arm64" key else !lib.hasSuffix "-arm64" key
+                  )
+                ) (lib.attrNames overrides)
+              );
+              baseName = "webkit-${value.revision}";
+              overrideName = key: "webkit_${lib.replaceStrings [ "-" ] [ "_" ] key}_special-${overrides.${key}}";
+            in
+            [ (lib.nameValuePair baseName components.webkit.${baseName}) ]
+            ++ map (
+              key: lib.nameValuePair (overrideName key) components.webkit.${overrideName key}
+            ) darwinOverrideKeys
+          else
+            [
+              (lib.nameValuePair "${
+                lib.replaceStrings [ "-" ] [ "_" ] name
+              }-${value.revision}" components.${name})
+            ]
         ) browsers
       )
     )
