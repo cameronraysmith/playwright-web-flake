@@ -18,12 +18,17 @@
         pkgs = import nixpkgs {
           inherit system;
         };
+        tests = import ./tests { inherit pkgs self system; };
       in
       {
         packages = {
           playwright-test = (pkgs.callPackage ./playwright-driver/driver.nix { }).playwright-test;
           playwright-driver = (pkgs.callPackage ./playwright-driver/driver.nix { }).playwright-core;
         };
+
+        checks = tests.checks;
+
+        apps = tests.apps;
 
         devShells.default = pkgs.mkShell {
           packages = [
