@@ -60,20 +60,14 @@ get_revision() {
     local base_revision="$4"
     local override_key=""
 
-    # Determine the revision override key based on platform and arch
-    if [ "$platform" = "darwin" ]; then
-        if [ "$name" = "webkit" ]; then
-            if [ "$arch" = "x86_64" ]; then
-                override_key="mac14"
-            else
-                override_key="mac14-arm64"
-            fi
-        elif [ "$name" = "ffmpeg" ]; then
-            if [ "$arch" = "x86_64" ]; then
-                override_key="mac12"
-            else
-                override_key="mac12-arm64"
-            fi
+    # Determine the revision override key based on platform and arch.
+    # webkit's darwin overrides are handled by update_webkit_darwin, which lays out
+    # both the base and every macNN override build side by side.
+    if [ "$platform" = "darwin" ] && [ "$name" = "ffmpeg" ]; then
+        if [ "$arch" = "x86_64" ]; then
+            override_key="mac12"
+        else
+            override_key="mac12-arm64"
         fi
     fi
 
@@ -148,11 +142,7 @@ update_browser() {
     local aarch64_url
 
     if [ "$platform" = "darwin" ]; then
-        if [ "$name" = "webkit" ]; then
-            suffix="mac-14"
-        else
-            suffix="mac"
-        fi
+        suffix="mac"
     else
         if [ "$name" = "ffmpeg" ] || [ "$name" = "chromium-headless-shell" ]; then
             suffix="linux"
@@ -191,6 +181,79 @@ update_browser() {
         "$(prefetch_browser "$aarch64_url" "$stripRoot")"
 }
 
+# The newest darwin webkit artifact Playwright publishes is NOT recorded in
+# browsers.json - it only exists in the driver's download map,
+# packages/playwright-core/src/server/registry/index.ts ('mac26' ->
+# builds/webkit/%s/webkit-mac-26.zip). Read it from the release being packaged
+# so a new macOS major is picked up automatically instead of silently shipping
+# a stale build (the bug that made macOS 26 hosts fail with
+# "Protocol error (Console.enable): 'Console' domain was not found").
+newest_mac_webkit_major() {
+    curl -fsSL \
+        "${playwright_raw_repo_url}/v${driver_version}/packages/playwright-core/src/server/registry/index.ts" \
+        | sed -n "s|.*'builds/webkit/%s/webkit-mac-\([0-9][0-9]*\)\(-arm64\)\{0,1\}\.zip'.*|\1|p" \
+        | sort -n \
+        | tail -1
+}
+
+# webkit on darwin lays out two builds side by side: the newest mac build
+# (mac-NN[-arm64] at the base revision) plus each macNN override (mac-NN[-arm64]
+# at its override revision). webkit.nix keys darwin hashes by download suffix,
+# derives the base suffix as the newest key in that table, and so each hash is
+# written to its "mac-*" attribute here.
+update_webkit_darwin() {
+    local webkit_file="$root/playwright-driver/webkit.nix"
+    local base_revision key rev mac_suffix url newest_major override_majors existing_major arm
+
+    base_revision="$(jq -r '.browsers["webkit"].revision' "$playwright_browsers_file")"
+
+    newest_major="$(newest_mac_webkit_major)"
+    if [ -z "$newest_major" ]; then
+        echo "update.sh: could not determine the newest mac webkit build from registry/index.ts" >&2
+        exit 1
+    fi
+
+    override_majors="$(jq -r '
+        .browsers["webkit"].revisionOverrides // {}
+        | keys[]
+        | select(startswith("mac"))
+        | ltrimstr("mac")
+        | sub("-arm64$"; "")
+    ' "$playwright_browsers_file" | sort -u)"
+
+    # Rename a stale base key (the previous macOS major) in place, so the hash
+    # table follows Playwright's newest artifact without manual edits. Override
+    # keys are owned by browsers.json and are never renamed.
+    for arm in "" "-arm64"; do
+        while IFS= read -r existing_major; do
+            if [ -z "$existing_major" ] || [ "$existing_major" = "$newest_major" ]; then
+                continue
+            fi
+            if printf '%s\n' "$override_majors" | grep -qx "$existing_major"; then
+                continue
+            fi
+            sed -i "s|\"mac-${existing_major}${arm}\"|\"mac-${newest_major}${arm}\"|g" "$webkit_file"
+        done < <(sed -n "s|.*\"mac-\([0-9][0-9]*\)${arm}\" = .*|\1|p" "$webkit_file" | sort -u)
+    done
+
+    for mac_suffix in "mac-${newest_major}" "mac-${newest_major}-arm64"; do
+        if ! grep -q "\"$mac_suffix\" = " "$webkit_file"; then
+            echo "update.sh: $webkit_file has no \"$mac_suffix\" hash attribute" >&2
+            exit 1
+        fi
+        url="https://cdn.playwright.dev/builds/webkit/${base_revision}/webkit-${mac_suffix}.zip"
+        replace_sha "$webkit_file" "\"$mac_suffix\"" "$(prefetch_browser "$url" false)"
+    done
+
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        rev="$(jq -r ".browsers[\"webkit\"].revisionOverrides[\"$key\"]" "$playwright_browsers_file")"
+        mac_suffix="mac-${key#mac}"
+        url="https://cdn.playwright.dev/builds/webkit/${rev}/webkit-${mac_suffix}.zip"
+        replace_sha "$webkit_file" "\"$mac_suffix\"" "$(prefetch_browser "$url" false)"
+    done < <(jq -r '.browsers["webkit"].revisionOverrides | keys[] | select(startswith("mac"))' "$playwright_browsers_file")
+}
+
 curl -fsSL \
     "https://raw.githubusercontent.com/microsoft/playwright/v${driver_version}/packages/playwright-core/browsers.json" \
     | jq '
@@ -205,7 +268,11 @@ curl -fsSL \
 
 for platform in "${browser_platforms[@]}"; do
     for browser in "${browser_names[@]}"; do
-        update_browser "$browser" "$platform"
+        if [ "$browser" = "webkit" ] && [ "$platform" = "darwin" ]; then
+            update_webkit_darwin
+        else
+            update_browser "$browser" "$platform"
+        fi
     done
 done
 
