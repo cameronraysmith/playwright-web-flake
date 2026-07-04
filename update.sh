@@ -60,20 +60,14 @@ get_revision() {
     local base_revision="$4"
     local override_key=""
 
-    # Determine the revision override key based on platform and arch
-    if [ "$platform" = "darwin" ]; then
-        if [ "$name" = "webkit" ]; then
-            if [ "$arch" = "x86_64" ]; then
-                override_key="mac14"
-            else
-                override_key="mac14-arm64"
-            fi
-        elif [ "$name" = "ffmpeg" ]; then
-            if [ "$arch" = "x86_64" ]; then
-                override_key="mac12"
-            else
-                override_key="mac12-arm64"
-            fi
+    # Determine the revision override key based on platform and arch.
+    # webkit's darwin overrides are handled by update_webkit_darwin, which lays out
+    # both the base and every macNN override build side by side.
+    if [ "$platform" = "darwin" ] && [ "$name" = "ffmpeg" ]; then
+        if [ "$arch" = "x86_64" ]; then
+            override_key="mac12"
+        else
+            override_key="mac12-arm64"
         fi
     fi
 
@@ -148,11 +142,7 @@ update_browser() {
     local aarch64_url
 
     if [ "$platform" = "darwin" ]; then
-        if [ "$name" = "webkit" ]; then
-            suffix="mac-14"
-        else
-            suffix="mac"
-        fi
+        suffix="mac"
     else
         if [ "$name" = "ffmpeg" ] || [ "$name" = "chromium-headless-shell" ]; then
             suffix="linux"
@@ -191,6 +181,30 @@ update_browser() {
         "$(prefetch_browser "$aarch64_url" "$stripRoot")"
 }
 
+# webkit on darwin lays out two builds side by side: the newest mac build
+# (mac-15[-arm64] at the base revision) plus each macNN override (mac-NN[-arm64]
+# at its override revision). webkit.nix keys darwin hashes by download suffix, so
+# each hash is written to its "mac-*" attribute.
+update_webkit_darwin() {
+    local webkit_file="$root/playwright-driver/webkit.nix"
+    local base_revision key rev mac_suffix url
+
+    base_revision="$(jq -r '.browsers["webkit"].revision' "$playwright_browsers_file")"
+
+    for mac_suffix in mac-15 mac-15-arm64; do
+        url="https://cdn.playwright.dev/builds/webkit/${base_revision}/webkit-${mac_suffix}.zip"
+        replace_sha "$webkit_file" "\"$mac_suffix\"" "$(prefetch_browser "$url" false)"
+    done
+
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        rev="$(jq -r ".browsers[\"webkit\"].revisionOverrides[\"$key\"]" "$playwright_browsers_file")"
+        mac_suffix="mac-${key#mac}"
+        url="https://cdn.playwright.dev/builds/webkit/${rev}/webkit-${mac_suffix}.zip"
+        replace_sha "$webkit_file" "\"$mac_suffix\"" "$(prefetch_browser "$url" false)"
+    done < <(jq -r '.browsers["webkit"].revisionOverrides | keys[] | select(startswith("mac"))' "$playwright_browsers_file")
+}
+
 curl -fsSL \
     "https://raw.githubusercontent.com/microsoft/playwright/v${driver_version}/packages/playwright-core/browsers.json" \
     | jq '
@@ -205,7 +219,11 @@ curl -fsSL \
 
 for platform in "${browser_platforms[@]}"; do
     for browser in "${browser_names[@]}"; do
-        update_browser "$browser" "$platform"
+        if [ "$browser" = "webkit" ] && [ "$platform" = "darwin" ]; then
+            update_webkit_darwin
+        else
+            update_browser "$browser" "$platform"
+        fi
     done
 done
 
