@@ -161,11 +161,13 @@ let
     };
     webkit = callPackage ./webkit.nix {
       inherit suffix system throwSystem;
-      inherit (playwright-core.passthru.browsersJSON.webkit) revision revisionOverrides;
+      inherit (playwright-core.passthru.browsersJSON.webkit) revision;
+      revisionOverrides = playwright-core.passthru.browsersJSON.webkit.revisionOverrides or {};
     };
     ffmpeg = callPackage ./ffmpeg.nix {
       inherit suffix system throwSystem;
-      inherit (playwright-core.passthru.browsersJSON.ffmpeg) revision revisionOverrides;
+      inherit (playwright-core.passthru.browsersJSON.ffmpeg) revision;
+      revisionOverrides = playwright-core.passthru.browsersJSON.ffmpeg.revisionOverrides or {};
     };
   };
 
