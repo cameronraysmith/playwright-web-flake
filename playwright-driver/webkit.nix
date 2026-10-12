@@ -218,11 +218,11 @@ let
 
   darwinHashes = {
     x86_64-darwin = {
-      "mac-26" = "sha256-9bqyft4Nxqg4xMSHEGDUBn83ChfrLAKSMF9mhsXhrs8=";
+      "mac-26" = "sha256-f/7VuRqWgpj10oaK1FvnL6a9LEhzLYqKN9ixLpT5NgE=";
       "mac-14" = "sha256-zmxdNdptFJ+8sad6HICoJRNsVNdQ0j4kKKCPX9YsBE8=";
     };
     aarch64-darwin = {
-      "mac-26-arm64" = "sha256-qCnYRNVU4PmlYz45iJQY8iJNv3etxgSd6dCZ0Thqxu8=";
+      "mac-26-arm64" = "sha256-LSRbrcgNwVU+fU5c1q9Nba73UrJHJFL1fhSME24x+D4=";
       "mac-14-arm64" = "sha256-AbDHuUg8jLNPWur6hieDdY8Kc2+PmlXRJGD46yujam4=";
     };
   };
